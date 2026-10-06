@@ -379,7 +379,7 @@ fn load_or_generate_persistent_uuid() -> String {
 }
 
 fn get_identity_file_path() -> Option<PathBuf> {
-    if let Ok(home) = std::env::var("HOME") {
+    if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
         return Some(PathBuf::from(home).join(".config/atv/device_identity.json"));
     }
     None

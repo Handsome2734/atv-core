@@ -91,6 +91,42 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  build-windows:
+    name: Build Windows EXE (x86_64)
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build atv-cli
+        run: |
+          cargo build --release -p atv-cli
+          Copy-Item target/release/atv-cli.exe AppleTVRemote-windows-x86_64.exe
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AppleTVRemote-Windows
+          path: AppleTVRemote-windows-x86_64.exe
+          retention-days: 14
+
+      - name: Publish GitHub Release (on tag or manual release)
+        if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.create_release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: AppleTVRemote-windows-x86_64.exe
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   build-android:
     name: Build Android TV APK (arm64-v8a + armeabi-v7a)
     runs-on: ubuntu-latest

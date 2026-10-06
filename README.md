@@ -29,6 +29,7 @@ Prebuilt binaries are attached to the [latest release](https://github.com/corvof
 | :--- | :--- |
 | macOS (Apple Silicon) | [`AppleTVRemote-arm64.dmg`](https://github.com/corvofeng/atv-core/releases/latest/download/AppleTVRemote-arm64.dmg) |
 | macOS (Intel) | [`AppleTVRemote-x86_64.dmg`](https://github.com/corvofeng/atv-core/releases/latest/download/AppleTVRemote-x86_64.dmg) |
+| Windows (x86_64) | [`AppleTVRemote-windows-x86_64.exe`](https://github.com/corvofeng/atv-core/releases/latest/download/AppleTVRemote-windows-x86_64.exe) |
 | Android TV / Google TV | [`FakeAtv-release.apk`](https://github.com/corvofeng/atv-core/releases/latest/download/FakeAtv-release.apk) |
 
 Prefer to build it yourself? See [Build from source](#build-from-source).
@@ -81,6 +82,12 @@ xattr -dr com.apple.quarantine /Applications/AppleTVRemote.app
 ```
 
 Then grant **System Settings → Privacy & Security → Accessibility → AppleTVRemote** (or your terminal if running the CLI). Launch the app and use the menu bar icon.
+
+### Windows
+
+Double-click `AppleTVRemote-windows-x86_64.exe` (no special permission needed). The console shows the device name and PIN, and the web console (`http://127.0.0.1:8765`) opens automatically for switching trackpad mode / speed. On first launch, **allow private-network access** in the Windows Firewall prompt, otherwise the iPhone cannot discover the device.
+
+> Supported: D-pad / select / back (Esc), mouse cursor & click, play/pause (double-click = next, triple-click = previous), volume / mute, power button turns the monitor off/on. Not yet: tray icon, reading the system volume.
 
 ### Android TV
 

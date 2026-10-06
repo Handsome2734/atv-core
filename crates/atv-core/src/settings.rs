@@ -53,7 +53,7 @@ pub fn get_settings_file_path() -> PathBuf {
         }
     }
 
-    if let Ok(home) = std::env::var("HOME") {
+    if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
         let trimmed = home.trim();
         if !trimmed.is_empty() {
             return PathBuf::from(trimmed).join(".config").join("atv").join("settings.json");

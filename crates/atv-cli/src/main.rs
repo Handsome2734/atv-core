@@ -7,6 +7,8 @@ use atv_core::{AtvConfig, AtvDelegate, AtvServer, TrackpadMode};
 
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(windows)]
+mod windows;
 mod android_adb;
 mod print;
 
@@ -25,7 +27,7 @@ fn usage() -> ! {
          that accepts control from iPhone's Control Center \"Apple TV Remote\".\n\
          \n\
          Options:\n\
-           --target <mac|android|print>   Target device to control (default: mac on macOS, else print)\n\
+           --target <mac|windows|android|print>  Target to control (default: this computer on macOS/Windows, else print)\n\
            --android-host <IP>            Android TV IP address (required when --target android)\n\
            --android-port <PORT>          Android TV ADB port (default: 5555)\n\
            --name <NAME>                  Device name shown in iOS Remote (default: Computer Name on macOS, else \"Mac Remote\")\n\
@@ -42,7 +44,8 @@ fn usage() -> ! {
            --debug, -d                    Enable debug-level logging for all protocol packets\n\
            --ui-port <PORT>               Debug Web UI port (default: 8765)\n\
            --no-ui                        Disable Debug Web UI\n\
-           --open                         Automatically open Debug UI in default browser\n\
+           --open                         Automatically open Debug UI in default browser (default on Windows)\n\
+           --no-open                      Do not open Debug UI automatically\n\
            -h, --help                     Show this help message"
     );
     exit(2);
@@ -55,19 +58,20 @@ struct CliArgs {
     android_port: u16,
     open_browser: bool,
     verbose_events: bool,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     prompt_accessibility: bool,
 }
 
 fn parse_args() -> CliArgs {
     let mut config = AtvConfig::default();
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     let mut target = Target::Mac;
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     let mut target = Target::Print;
 
     let mut android_host = None;
     let mut android_port = 5555;
-    let mut open_browser = false;
+    let mut open_browser = cfg!(windows);
     let mut verbose_events = false;
     let mut mouse_mode_explicit = false;
     let mut mouse_speed_explicit = false;
@@ -79,7 +83,7 @@ fn parse_args() -> CliArgs {
             "--target" => {
                 let t = args.next().unwrap_or_else(|| usage());
                 match t.as_str() {
-                    "mac" => target = Target::Mac,
+                    "mac" | "windows" | "win" | "native" => target = Target::Mac,
                     "android" => target = Target::Android,
                     "print" | "observe" => target = Target::Print,
                     _ => usage(),
@@ -159,6 +163,7 @@ fn parse_args() -> CliArgs {
             }
             "--no-ui" => config.ui_port = None,
             "--open" => open_browser = true,
+            "--no-open" => open_browser = false,
             "-h" | "--help" => usage(),
             _ => usage(),
         }
@@ -169,7 +174,7 @@ fn parse_args() -> CliArgs {
     }
 
     if !mouse_mode_explicit {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         if target == Target::Mac {
             let settings = atv_core::UserSettings::load();
             let initial_mode = settings
@@ -248,9 +253,19 @@ async fn main() {
                     args.prompt_accessibility,
                 ))
             }
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(windows)]
             {
-                eprintln!("Warning: Target 'mac' is only supported on macOS; falling back to print");
+                let settings = atv_core::UserSettings::load();
+                Arc::new(windows::WinDelegate::new(
+                    mouse_mode.clone(),
+                    args.config.mouse_speed,
+                    settings.mouse_accel.unwrap_or(true),
+                    args.verbose_events || settings.verbose_events.unwrap_or(false),
+                ))
+            }
+            #[cfg(not(any(target_os = "macos", windows)))]
+            {
+                eprintln!("Warning: Target 'mac' is only supported on macOS/Windows; falling back to print");
                 Arc::new(print::PrintDelegate)
             }
         }
@@ -372,7 +387,11 @@ async fn main() {
             let _ = tokio::process::Command::new("/usr/bin/open")
                 .arg(&url)
                 .spawn();
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(windows)]
+            let _ = tokio::process::Command::new("explorer")
+                .arg(&url)
+                .spawn();
+            #[cfg(not(any(target_os = "macos", windows)))]
             let _ = tokio::process::Command::new("xdg-open")
                 .arg(&url)
                 .spawn();
