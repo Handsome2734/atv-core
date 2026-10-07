@@ -16,7 +16,7 @@ on:
 
 jobs:
   build-macos:
-    name: Build macOS App & DMG (Apple Silicon)
+    name: Build macOS App & DMG (arm64 & x86_64)
     runs-on: macos-14
     permissions:
       contents: write
@@ -92,7 +92,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build-windows:
-    name: Build Windows EXE (x86_64)
+    name: Build Windows EXE & ZIP (x86_64)
     runs-on: windows-latest
     permissions:
       contents: write
@@ -104,23 +104,28 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build atv-cli
+      - name: Build and Package atv-cli
         run: |
           cargo build --release -p atv-cli
           Copy-Item target/release/atv-cli.exe AppleTVRemote-windows-x86_64.exe
+          Compress-Archive -Path AppleTVRemote-windows-x86_64.exe -DestinationPath AppleTVRemote-windows-x86_64.zip -Force
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: AppleTVRemote-Windows
-          path: AppleTVRemote-windows-x86_64.exe
+          path: |
+            AppleTVRemote-windows-x86_64.zip
+            AppleTVRemote-windows-x86_64.exe
           retention-days: 14
 
       - name: Publish GitHub Release (on tag or manual release)
         if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.create_release == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          files: AppleTVRemote-windows-x86_64.exe
+          files: |
+            AppleTVRemote-windows-x86_64.zip
+            AppleTVRemote-windows-x86_64.exe
           generate_release_notes: true
           draft: false
           prerelease: false

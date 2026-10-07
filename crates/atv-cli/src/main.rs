@@ -1,4 +1,7 @@
-//! atv-cli: Apple TV Remote simulator and controller for macOS and Android TV.
+//! atv-cli: Apple TV Remote simulator and controller for macOS, Windows and Android TV.
+
+// On Windows run as a background tray app (no console window).
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
 use std::process::exit;
 use std::sync::Arc;
@@ -7,6 +10,8 @@ use atv_core::{AtvConfig, AtvDelegate, AtvServer, TrackpadMode};
 
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(windows)]
+mod tray;
 #[cfg(windows)]
 mod windows;
 mod android_adb;
@@ -221,13 +226,28 @@ async fn main() {
     use std::io::IsTerminal;
     let is_terminal = std::io::stdout().is_terminal();
 
-    tracing_subscriber::fmt()
+    let log = tracing_subscriber::fmt()
         .with_ansi(is_terminal)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| default_filter.into()),
-        )
-        .init();
+        );
+    // No console on Windows: write logs to a file next to settings.json.
+    #[cfg(windows)]
+    {
+        if tray::already_running() {
+            tray::message_box("Apple TV Remote 已在后台运行，请在任务栏托盘中查看。");
+            exit(0);
+        }
+        let path = tray::log_path();
+        let _ = std::fs::create_dir_all(path.parent().unwrap());
+        match std::fs::File::create(&path) {
+            Ok(f) => log.with_ansi(false).with_writer(std::sync::Mutex::new(f)).init(),
+            Err(_) => log.init(),
+        }
+    }
+    #[cfg(not(windows))]
+    log.init();
 
     let args = parse_args();
     let trackpad_mode = Arc::new(std::sync::atomic::AtomicU8::new(args.config.trackpad_mode as u8));
@@ -284,10 +304,12 @@ async fn main() {
         }
     };
 
-    let server = match AtvServer::start_with_trackpad_mode(args.config, delegate.clone(), trackpad_mode.clone(), mouse_mode.clone()).await {
+    let server = match AtvServer::start_with_trackpad_mode(args.config.clone(), delegate.clone(), trackpad_mode.clone(), mouse_mode.clone()).await {
         Ok(server) => server,
         Err(e) => {
             eprintln!("failed to start server: {e}");
+            #[cfg(windows)]
+            tray::message_box(&format!("启动失败 (failed to start server): {e}"));
             exit(1);
         }
     };
@@ -388,9 +410,7 @@ async fn main() {
                 .arg(&url)
                 .spawn();
             #[cfg(windows)]
-            let _ = tokio::process::Command::new("explorer")
-                .arg(&url)
-                .spawn();
+            tray::open_url(&url);
             #[cfg(not(any(target_os = "macos", windows)))]
             let _ = tokio::process::Command::new("xdg-open")
                 .arg(&url)
@@ -400,7 +420,68 @@ async fn main() {
 
     println!("atv-cli ready (press Ctrl+C to stop)");
 
-    tokio::signal::ctrl_c().await.ok();
-    println!("shutting down...");
-    server.stop().await;
+    #[cfg(windows)]
+    {
+        let is_running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let title = format!("Apple TV Remote · {} · PIN {:04}", server.identity().name, server.config().pin);
+        let url = server.ui_port().map(|p| format!("http://127.0.0.1:{p}"));
+        let mut rx = tray::spawn(title, url, trackpad_mode.clone(), is_running.clone());
+
+        let mut current_server: Option<AtvServer> = Some(server);
+        let config = args.config;
+        let delegate = delegate.clone();
+
+        loop {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => break,
+                cmd = rx.recv() => match cmd {
+                    Some(tray::TrayCmd::Mode(m)) => {
+                        if let Some(srv) = &current_server {
+                            srv.set_trackpad_mode(m);
+                        }
+                    }
+                    Some(tray::TrayCmd::ToggleService) => {
+                        if let Some(srv) = current_server.take() {
+                            println!("Stopping simulator service via tray...");
+                            srv.stop().await;
+                            is_running.store(false, std::sync::atomic::Ordering::SeqCst);
+                            tray::update_status(false, "");
+                            println!("Simulator service stopped.");
+                        } else {
+                            println!("Starting simulator service via tray...");
+                            match AtvServer::start_with_trackpad_mode(
+                                config.clone(),
+                                delegate.clone(),
+                                trackpad_mode.clone(),
+                                mouse_mode.clone(),
+                            ).await {
+                                Ok(srv) => {
+                                    println!("Simulator service started.");
+                                    let info = format!("{} · PIN {:04}", srv.identity().name, srv.config().pin);
+                                    tray::update_status(true, &info);
+                                    current_server = Some(srv);
+                                    is_running.store(true, std::sync::atomic::Ordering::SeqCst);
+                                }
+                                Err(e) => {
+                                    eprintln!("Failed to restart server: {e}");
+                                    tray::message_box(&format!("启动服务失败: {e}"));
+                                }
+                            }
+                        }
+                    }
+                    Some(tray::TrayCmd::Quit) | None => break,
+                },
+            }
+        }
+        if let Some(srv) = current_server {
+            srv.stop().await;
+        }
+        tray::remove();
+    }
+    #[cfg(not(windows))]
+    {
+        tokio::signal::ctrl_c().await.ok();
+        println!("shutting down...");
+        server.stop().await;
+    }
 }

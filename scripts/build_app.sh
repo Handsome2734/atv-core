@@ -114,7 +114,19 @@ find_best_identity() {
         fi
     fi
 
-    # 2. 匹配 Apple 官方发布证书 (Developer ID Application)
+    # 2. 匹配本地通用持久化证书 (Corvo Development) - 优先保证本地权限持久不失效
+    if security find-identity -p codesigning | grep -q "\"Corvo Development\""; then
+        echo "Corvo Development"
+        return
+    fi
+
+    # 3. 兼容历史项目自签证书 (AppleTVRemote Development)
+    if security find-identity -p codesigning | grep -q "\"AppleTVRemote Development\""; then
+        echo "AppleTVRemote Development"
+        return
+    fi
+
+    # 4. 匹配 Apple 官方发布证书 (Developer ID Application)
     local dev_id
     dev_id=$(security find-identity -v -p codesigning | grep "Developer ID Application:" | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
     if [ -n "$dev_id" ]; then
@@ -122,23 +134,11 @@ find_best_identity() {
         return
     fi
 
-    # 3. 匹配 Apple 官方开发证书 (Apple Development)
+    # 5. 匹配 Apple 官方开发证书 (Apple Development)
     local apple_dev
     apple_dev=$(security find-identity -v -p codesigning | grep "Apple Development:" | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
     if [ -n "$apple_dev" ]; then
         echo "$apple_dev"
-        return
-    fi
-
-    # 4. 匹配本地通用持久化自签证书 (Corvo Development)
-    if security find-identity -p codesigning | grep -q "\"Corvo Development\""; then
-        echo "Corvo Development"
-        return
-    fi
-
-    # 5. 兼容历史项目证书 (AppleTVRemote Development)
-    if security find-identity -p codesigning | grep -q "\"AppleTVRemote Development\""; then
-        echo "AppleTVRemote Development"
         return
     fi
 

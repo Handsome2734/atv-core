@@ -29,7 +29,7 @@
 | :--- | :--- |
 | macOS（Apple Silicon） | [`AppleTVRemote-arm64.dmg`](https://github.com/corvofeng/atv-core/releases/latest/download/AppleTVRemote-arm64.dmg) |
 | macOS（Intel） | [`AppleTVRemote-x86_64.dmg`](https://github.com/corvofeng/atv-core/releases/latest/download/AppleTVRemote-x86_64.dmg) |
-| Windows（x86_64） | [`AppleTVRemote-windows-x86_64.exe`](https://github.com/corvofeng/atv-core/releases/latest/download/AppleTVRemote-windows-x86_64.exe) |
+| Windows（x86_64） | [`AppleTVRemote-windows-x86_64.zip`](https://github.com/corvofeng/atv-core/releases/latest/download/AppleTVRemote-windows-x86_64.zip) / [`.exe`](https://github.com/corvofeng/atv-core/releases/latest/download/AppleTVRemote-windows-x86_64.exe) |
 | Android TV / Google TV | [`FakeAtv-release.apk`](https://github.com/corvofeng/atv-core/releases/latest/download/FakeAtv-release.apk) |
 
 想自己编译？见[从源码构建](#从源码构建)。
@@ -85,9 +85,9 @@ xattr -dr com.apple.quarantine /Applications/AppleTVRemote.app
 
 ### Windows
 
-双击 `AppleTVRemote-windows-x86_64.exe` 即可（无需额外权限）：控制台显示设备名与 PIN，并自动在浏览器打开 Web 控制台（`http://127.0.0.1:8765`），可在其中切换触控板模式 / 调整速度。首次运行时请在 Windows 防火墙弹窗中**允许专用网络访问**，否则 iPhone 无法发现设备。
+解压下载的 `AppleTVRemote-windows-x86_64.zip`（或直接运行 `AppleTVRemote-windows-x86_64.exe`）即可（无需额外权限）：程序直接在后台以系统托盘图标形式运行（不占用终端窗口），并自动在浏览器打开 Web 控制台（`http://127.0.0.1:8765`），可在其中切换触控板模式 / 调整速度。首次运行时请在 Windows 防火墙弹窗中**允许专用网络访问**，否则 iPhone 无法发现设备。
 
-> 已支持：方向键 / 确认 / 返回 (Esc)、鼠标光标与点击、播放暂停（双击下一曲、三击上一曲）、音量 / 静音、电源键关闭/唤醒显示器。暂不支持：托盘图标、读取系统音量。
+> 已支持：系统托盘右键菜单（启停模拟服务、切换触控板模式、开机自启、查看日志、退出）、方向键 / 确认 / 返回 (Esc)、鼠标光标与点击、播放暂停（双击下一曲、三击上一曲）、音量 / 静音、电源键关闭/唤醒显示器。
 
 ### Android TV
 
