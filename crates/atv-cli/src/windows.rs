@@ -22,11 +22,12 @@ struct Point {
 extern "system" {
     fn keybd_event(vk: u8, scan: u8, flags: u32, extra: usize);
     fn mouse_event(flags: u32, dx: i32, dy: i32, data: u32, extra: usize);
-    fn GetCursorPos(p: *mut Point) -> i32;
-    fn SetCursorPos(x: i32, y: i32) -> i32;
+    fn GetPhysicalCursorPos(p: *mut Point) -> i32;
+    fn SetPhysicalCursorPos(x: i32, y: i32) -> i32;
     fn GetSystemMetrics(index: i32) -> i32;
     fn PostMessageW(hwnd: isize, msg: u32, wparam: usize, lparam: isize) -> i32;
     fn SetProcessDPIAware() -> i32;
+    fn SetThreadDpiAwarenessContext(context: isize) -> isize;
 }
 
 const KEYEVENTF_EXTENDEDKEY: u32 = 0x1;
@@ -74,10 +75,48 @@ fn press_key(vk: u8) {
     }
 }
 
-fn cursor_pos() -> (f64, f64) {
+fn cursor_pos() -> std::io::Result<(f64, f64)> {
     let mut p = Point::default();
-    unsafe { GetCursorPos(&mut p) };
-    (p.x as f64, p.y as f64)
+    if unsafe { GetPhysicalCursorPos(&mut p) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok((p.x as f64, p.y as f64))
+}
+
+/// Tokio callbacks may run on different threads. Scope DPI awareness to the
+/// synchronous cursor operation and restore it before returning to the runtime.
+struct PhysicalDpiContext(isize);
+
+impl PhysicalDpiContext {
+    fn enter() -> std::io::Result<Self> {
+        // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE. Even physical cursor writes
+        // can be clipped to a virtualized desktop in an unaware thread context.
+        let previous = unsafe { SetThreadDpiAwarenessContext(-3) };
+        if previous == 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(Self(previous))
+        }
+    }
+}
+
+impl Drop for PhysicalDpiContext {
+    fn drop(&mut self) {
+        unsafe { SetThreadDpiAwarenessContext(self.0) };
+    }
+}
+
+/// Preserve subpixel motion only while our last request matches the real cursor.
+/// Physical mouse input, display edges and cursor clipping can all move it away.
+fn next_cursor_position(
+    previous: Option<(f64, f64)>,
+    actual: (f64, f64),
+    delta: (f64, f64),
+) -> (f64, f64) {
+    let base = previous
+        .filter(|&(x, y)| (x.round(), y.round()) == actual)
+        .unwrap_or(actual);
+    (base.0 + delta.0, base.1 + delta.1)
 }
 
 /// Bounds of the whole virtual desktop (all monitors): (left, top, right, bottom).
@@ -108,7 +147,7 @@ pub struct WinDelegate {
     mouse_accel: AtomicBool,
     verbose_events: AtomicBool,
     display_asleep: AtomicBool,
-    cursor: Mutex<(f64, f64)>,
+    cursor: Mutex<Option<(f64, f64)>>,
     /// (last click time, click count) for play/pause multi-click detection.
     play_clicks: Arc<Mutex<(Instant, u32)>>,
     play_gen: Arc<AtomicU32>,
@@ -124,7 +163,7 @@ impl WinDelegate {
             mouse_accel: AtomicBool::new(accel),
             verbose_events: AtomicBool::new(verbose),
             display_asleep: AtomicBool::new(false),
-            cursor: Mutex::new(cursor_pos()),
+            cursor: Mutex::new(None),
             play_clicks: Arc::new(Mutex::new((Instant::now() - Duration::from_secs(10), 0))),
             play_gen: Arc::new(AtomicU32::new(0)),
         }
@@ -139,6 +178,9 @@ impl WinDelegate {
     }
 
     fn mouse_move(&self, dx: f64, dy: f64) {
+        if !dx.is_finite() || !dy.is_finite() {
+            return;
+        }
         let dist = (dx * dx + dy * dy).sqrt();
         if dist == 0.0 {
             return;
@@ -155,11 +197,53 @@ impl WinDelegate {
             2.375 + (dist - 5.0).min(10.0) * 0.22
         };
         let scale = accel * 1.6 * speed;
-        let (l, t, r, b) = virtual_screen();
         let mut cur = self.cursor.lock().unwrap();
-        cur.0 = (cur.0 + dx * scale).clamp(l, r);
-        cur.1 = (cur.1 + dy * scale).clamp(t, b);
-        unsafe { SetCursorPos(cur.0.round() as i32, cur.1.round() as i32) };
+        let dpi_context = match PhysicalDpiContext::enter() {
+            Ok(context) => context,
+            Err(error) => {
+                *cur = None;
+                warn!(%error, "[Windows] could not set cursor thread DPI awareness");
+                return;
+            }
+        };
+        let actual = match cursor_pos() {
+            Ok(pos) => pos,
+            Err(error) => {
+                *cur = None;
+                warn!(%error, "[Windows] GetPhysicalCursorPos failed; skipping mouse move");
+                return;
+            }
+        };
+        let target = next_cursor_position(*cur, actual, (dx * scale, dy * scale));
+        let requested = (target.0.round() as i32, target.1.round() as i32);
+        // Keep reads and writes in physical pixels, regardless of the callback
+        // thread's DPI context. Windows applies the real monitor/clip boundaries;
+        // a DPI-virtualized desktop rectangle must not truncate the target.
+        if unsafe { SetPhysicalCursorPos(requested.0, requested.1) } == 0 {
+            let error = std::io::Error::last_os_error();
+            *cur = None;
+            warn!(%error, ?actual, ?requested, "[Windows] SetPhysicalCursorPos failed");
+            return;
+        }
+        match cursor_pos() {
+            Ok(after) => {
+                *cur = if after == (requested.0 as f64, requested.1 as f64) {
+                    Some(target)
+                } else {
+                    // Discard motion Windows could not apply, so reversing
+                    // direction at an edge responds immediately.
+                    Some(after)
+                };
+                self.log(&format!(
+                    "mouse: from={actual:?} requested={requested:?} actual={after:?} previous_dpi_context={}",
+                    dpi_context.0
+                ));
+            }
+            Err(error) => {
+                *cur = None;
+                warn!(%error, ?requested, "[Windows] could not verify cursor position");
+            }
+        }
     }
 
     fn mouse_click(&self) {
@@ -239,8 +323,9 @@ impl AtvDelegate for WinDelegate {
             return;
         }
         match phase {
-            // Re-sync with the real cursor in case the user moved the physical mouse.
-            TouchPhase::Began => *self.cursor.lock().unwrap() = cursor_pos(),
+            // Each movement reads the real cursor; a new gesture drops the
+            // previous gesture's fractional remainder.
+            TouchPhase::Began => *self.cursor.lock().unwrap() = None,
             TouchPhase::Moved => self.mouse_move(dx, dy),
             TouchPhase::Ended => {}
         }
@@ -272,6 +357,7 @@ impl AtvDelegate for WinDelegate {
     }
 
     fn get_screen_size(&self) -> Option<(f64, f64)> {
+        let _dpi_context = PhysicalDpiContext::enter().ok()?;
         let (l, t, r, b) = virtual_screen();
         Some((r - l, b - t))
     }
@@ -283,5 +369,81 @@ impl AtvDelegate for WinDelegate {
             EventKind::ClientDisconnected => info!("[Windows] iPhone disconnected: {detail}"),
             _ => self.log(&format!("event: {kind:?} {detail}")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{next_cursor_position, PhysicalDpiContext, SetThreadDpiAwarenessContext};
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetThreadDpiAwarenessContext() -> isize;
+        fn GetAwarenessFromDpiAwarenessContext(context: isize) -> i32;
+    }
+
+    #[test]
+    fn cursor_dpi_context_is_scoped_and_restored() {
+        let previous = unsafe { SetThreadDpiAwarenessContext(-1) };
+        assert_ne!(previous, 0);
+        let _restore = PhysicalDpiContext(previous);
+        {
+            let _physical = PhysicalDpiContext::enter().unwrap();
+            assert_eq!(
+                unsafe { GetAwarenessFromDpiAwarenessContext(GetThreadDpiAwarenessContext()) },
+                2 // DPI_AWARENESS_PER_MONITOR_AWARE
+            );
+        }
+        assert_eq!(
+            unsafe { GetAwarenessFromDpiAwarenessContext(GetThreadDpiAwarenessContext()) },
+            0 // DPI_AWARENESS_UNAWARE
+        );
+    }
+
+    #[test]
+    fn moves_across_primary_boundary_and_back() {
+        let secondary = next_cursor_position(None, (3838.0, 1000.0), (8.0, 3.0));
+        assert_eq!(secondary, (3846.0, 1003.0));
+        assert_eq!(
+            next_cursor_position(Some(secondary), secondary, (-12.0, -3.0)),
+            (3834.0, 1000.0)
+        );
+    }
+
+    #[test]
+    fn follows_physical_mouse_to_secondary_during_gesture() {
+        assert_eq!(
+            next_cursor_position(Some((1200.25, 700.0)), (6000.0, 900.0), (-10.0, 4.0)),
+            (5990.0, 904.0)
+        );
+    }
+
+    #[test]
+    fn reverses_immediately_after_windows_clips_motion() {
+        assert_eq!(
+            next_cursor_position(Some((8000.0, 1000.0)), (7679.0, 1000.0), (-5.0, 0.0)),
+            (7674.0, 1000.0)
+        );
+    }
+
+    #[test]
+    fn accumulates_subpixel_motion() {
+        let mut previous = None;
+        let mut actual = (4500.0, 1000.0);
+        for _ in 0..4 {
+            let next = next_cursor_position(previous, actual, (0.25, -0.25));
+            actual = (next.0.round(), next.1.round());
+            previous = Some(next);
+        }
+        assert_eq!(previous, Some((4501.0, 999.0)));
+        assert_eq!(actual, (4501.0, 999.0));
+    }
+
+    #[test]
+    fn supports_monitors_left_of_and_above_primary() {
+        assert_eq!(
+            next_cursor_position(None, (-1500.0, -800.0), (-10.0, -20.0)),
+            (-1510.0, -820.0)
+        );
     }
 }
